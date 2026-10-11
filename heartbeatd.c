@@ -21,7 +21,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-/* watch pf log for connections, update findings entries. */
+/* watch pf log for connections and refresh the target heartbeat entries. */
 #include <libmemcached/memcached.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -62,7 +62,7 @@ int debug = 1;
 int wait_timeout=60*60;
 
 u_int8_t  flag_debug = 0;
-char      *FINDINGSD_USER = "_memcached";
+char      *HEARTBEATD_USER = "_memcached";
 char      *pflogif = "pflog0";
 char      errbuf[PCAP_ERRBUF_SIZE];
 pcap_t    *hpcap = NULL;
@@ -236,7 +236,7 @@ main(int argc, char **argv)
         pflogif = optarg;
         break;
       case 'u':
-        FINDINGSD_USER = optarg;
+        HEARTBEATD_USER = optarg;
         break;
       case 's':
         sock = optarg;
@@ -286,8 +286,8 @@ main(int argc, char **argv)
     err(1, "couldn't initialize pcap");
 
   /* privdrop */
-  if ((pw = getpwnam(FINDINGSD_USER)) == NULL)
-    errx(1, "no such user %s", FINDINGSD_USER);
+  if ((pw = getpwnam(HEARTBEATD_USER)) == NULL)
+    errx(1, "no such user %s", HEARTBEATD_USER);
 
   if (setgroups(1, &pw->pw_gid) ||
       setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
