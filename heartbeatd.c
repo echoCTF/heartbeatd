@@ -241,7 +241,7 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-  int     ch;
+  int     ch, r;
   const char *errstr;
   struct passwd  *pw;
   char *sock = "/var/run/memcached/memcached.sock";
@@ -308,7 +308,7 @@ main(int argc, char **argv)
   //
 
   if (init_pcap() == -1)
-    err(1, "couldn't initialize pcap");
+    errx(1, "couldn't initialize pcap");
 
   /* privdrop */
   if ((pw = getpwnam(HEARTBEATD_USER)) == NULL)
@@ -333,11 +333,13 @@ main(int argc, char **argv)
     openlog_r(__progname, LOG_PID | LOG_NDELAY, LOG_DAEMON, &sdata);
   }
 
-  pcap_loop(hpcap, -1, phandler, NULL);
+  r = pcap_loop(hpcap, -1, phandler, NULL);
+  if (r == -1)  /* capture error, a signal stop returns -2 */
+    logmsg(LOG_ERR, "pcap_loop: %s", pcap_geterr(hpcap));
 
   logmsg(LOG_NOTICE, "exiting");
   if (!flag_debug)
     closelog_r(&sdata);
 
-  exit(0);
+  exit(r == -1 ? 1 : 0);
 }
