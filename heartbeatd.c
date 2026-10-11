@@ -143,7 +143,7 @@ void
 logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 {
   sa_family_t        af;
-  u_int8_t           hdrlen;
+  u_int32_t          hdrlen;
   u_int32_t          caplen = h->caplen;
   const struct ip    *ip = NULL;
   const struct pfloghdr  *hdr;
