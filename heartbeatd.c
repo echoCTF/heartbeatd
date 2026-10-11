@@ -151,6 +151,7 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   char *pname = "unknown";
   char straddr_src[40] = { '\0' }, straddr_dst[40] = { '\0' };
   u_int16_t dport=0;
+  u_int16_t hdr_dport=0;
   time_t _tm =time(NULL );
   struct tm * curtime = localtime ( &_tm );
   char *timestring=asctime(curtime);
@@ -169,19 +170,28 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
     return;
   }
 
+  /* dport is the last field of the header, only read it when the header has it */
+  if (hdr->length >= sizeof(struct pfloghdr))
+    hdr_dport = ntohs(hdr->dport);
+
   af = hdr->af;
   if (af == AF_INET) {
+    if (caplen < hdrlen + sizeof(struct ip)) {
+      logmsg(LOG_WARNING, "packet shorter than the pflog and IP headers (%u). "
+        "packet dropped.", caplen);
+      return;
+    }
     ip = (const struct ip *)(sp + hdrlen);
     inet_ntop(af, &ip->ip_src, straddr_src,sizeof(straddr_src));
     inet_ntop(af, &ip->ip_dst, straddr_dst,sizeof(straddr_dst));
     if (ip->ip_p == IPPROTO_UDP) {
-        dport = ntohs(hdr->dport);
+        dport = hdr_dport;
         pp=getprotobynumber(IPPROTO_UDP);
     } else if (ip->ip_p == IPPROTO_ICMP) {
         dport = 0;
         pp=getprotobynumber(IPPROTO_ICMP);
     } else if (ip->ip_p == IPPROTO_TCP) {
-        dport = ntohs(hdr->dport);
+        dport = hdr_dport;
         pp=getprotobynumber(IPPROTO_TCP);
     }
   }
