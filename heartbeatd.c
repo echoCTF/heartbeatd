@@ -55,6 +55,7 @@
 #define PCAPTIMO    500  /* ms */
 #define PCAPOPTZ    1  /* optimize filter */
 #define PCAPFSIZ    512  /* pcap filter string size */
+#define MAXWAITTMO  (60*60*24*30)  /* memcached reads larger expiry values as absolute time */
 
 
 
@@ -146,7 +147,8 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   u_int32_t          caplen = h->caplen;
   const struct ip    *ip = NULL;
   const struct pfloghdr  *hdr;
-  struct protoent *pp;
+  struct protoent *pp = NULL;
+  char *pname = "unknown";
   char straddr_src[40] = { '\0' }, straddr_dst[40] = { '\0' };
   u_int16_t dport=0;
   time_t _tm =time(NULL );
@@ -185,8 +187,10 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   }
 
   if (straddr_dst[0] != '\0' && straddr_src[0] != '\0') {
-    logmsg(LOG_DEBUG,"[%s] SRC: %s => DST: => %s:%d, PROTO: %s",timestring,straddr_src,straddr_dst, dport, pp->p_name);
-    set_target_heartbeat(straddr_src,straddr_dst, dport, pp->p_name);
+    if (pp != NULL)
+      pname = pp->p_name;
+    logmsg(LOG_DEBUG,"[%s] SRC: %s => DST: => %s:%d, PROTO: %s",timestring,straddr_src,straddr_dst, dport, pname);
+    set_target_heartbeat(straddr_src,straddr_dst, dport, pname);
   }
 }
 
@@ -222,8 +226,9 @@ int
 main(int argc, char **argv)
 {
   int     ch;
+  const char *errstr;
   struct passwd  *pw;
-  char *sock;
+  char *sock = "/var/run/memcached/memcached.sock";
   pcap_handler   phandler = logpkt_handler;
   memcached_server_st *servers = NULL;
 
@@ -245,7 +250,9 @@ main(int argc, char **argv)
         filter = optarg;
         break;
       case 't':
-        wait_timeout = atoi(optarg);
+        wait_timeout = strtonum(optarg, 1, MAXWAITTMO, &errstr);
+        if (errstr != NULL)
+          errx(1, "wait_timeout is %s: %s", errstr, optarg);
         break;
       default:
         usage();
