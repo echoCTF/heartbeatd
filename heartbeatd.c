@@ -56,6 +56,7 @@
 #define PCAPOPTZ    1  /* optimize filter */
 #define PCAPFSIZ    512  /* pcap filter string size */
 #define MAXWAITTMO  (60*60*24*30)  /* memcached reads larger expiry values as absolute time */
+#define MEMCTMO     250  /* ms, memcached connect and poll timeout */
 
 
 
@@ -210,14 +211,22 @@ set_target_heartbeat(char *ip_src, char *ip_dst, u_int16_t port_dst, char *p_nam
   static unsigned long srcLen=0,dstLen=0,p_nameLen=0;
   static int port[1]={0};
   static char src[15]={0},dst[15]={0},proto[6]={0};
+  static unsigned long failed=0;  /* failed stores in a row, only the first is logged */
   char key[128];
 
   sprintf(key,"target_heartbeat:%s",ip_dst);
   rc = memcached_set(memc, key, strlen(key), ip_dst, strlen(ip_dst), (time_t)wait_timeout, (uint32_t)0);
   if (rc != MEMCACHED_SUCCESS)
   {
-    logmsg(LOG_ERR, "Couldn't store key: %s\n", memcached_strerror(memc, rc));
+    if (failed++ == 0)
+      logmsg(LOG_ERR, "Couldn't store key: %s\n", memcached_strerror(memc, rc));
     return (-1);
+  }
+
+  if (failed != 0)
+  {
+    logmsg(LOG_NOTICE, "memcached store works again, %lu stores failed", failed);
+    failed = 0;
   }
 
   return 0;
@@ -295,7 +304,9 @@ main(int argc, char **argv)
     errx(1, "Couldn't add server: %s\n", memcached_strerror(memc, rc));
   }
 
-  // and set options and settings
+  // and set options and settings, a stuck memcached must not hold up the packet loop
+  memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_CONNECT_TIMEOUT, MEMCTMO);
+  memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_POLL_TIMEOUT, MEMCTMO);
   //
   //
 
@@ -311,6 +322,11 @@ main(int argc, char **argv)
       setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid)) {
     err(1, "failed to drop privs");
   }
+
+  /* connect now, as the unprivileged user, so a missing or dead socket stops the start */
+  rc = memcached_version(memc);
+  if (rc != MEMCACHED_SUCCESS)
+    errx(1, "couldn't connect to memcached: %s", memcached_last_error_message(memc));
 
   if (!flag_debug) {
     if (daemon(0, 0) == -1)
