@@ -57,11 +57,18 @@
 #define PCAPFSIZ    512  /* pcap filter string size */
 #define MAXWAITTMO  (60*60*24*30)
 #define MEMCTMO     250
+#define HBCACHESZ   4096
+#define HBMAXIVAL   60
 
-
+struct hbslot {
+  u_int32_t  addr;
+  time_t     last;
+};
 
 int debug = 1;
 int wait_timeout=60*60;
+int hbival=0;
+struct hbslot  hbcache[HBCACHESZ];
 
 u_int8_t  flag_debug = 0;
 char      *HEARTBEATD_USER = "_memcached";
@@ -148,6 +155,7 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   u_int32_t          caplen = h->caplen;
   const struct ip    *ip = NULL;
   const struct pfloghdr  *hdr;
+  struct hbslot *slot;
   char *pname = "unknown";
   char straddr_src[40] = { '\0' }, straddr_dst[40] = { '\0' };
   u_int16_t dport=0;
@@ -200,7 +208,14 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
       snprintf(tsbuf, sizeof(tsbuf), "[%s] ", timestring);
     }
     logmsg(LOG_DEBUG,"%sSRC: %s => DST: => %s:%d, PROTO: %s",tsbuf,straddr_src,straddr_dst, dport, pname);
-    set_target_heartbeat(straddr_src,straddr_dst, dport, pname);
+    slot = &hbcache[ntohl(ip->ip_dst.s_addr) & (HBCACHESZ - 1)];
+    if (slot->addr == ip->ip_dst.s_addr && h->ts.tv_sec >= slot->last &&
+        h->ts.tv_sec - slot->last < hbival)
+      return;
+    if (set_target_heartbeat(straddr_src,straddr_dst, dport, pname) == 0) {
+      slot->addr = ip->ip_dst.s_addr;
+      slot->last = h->ts.tv_sec;
+    }
   }
 }
 
@@ -275,6 +290,10 @@ main(int argc, char **argv)
   }
   if (geteuid())
     errx(1, "need root privileges");
+
+  hbival = wait_timeout / 10;
+  if (hbival > HBMAXIVAL)
+    hbival = HBMAXIVAL;
 
 
 
