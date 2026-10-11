@@ -208,9 +208,6 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 int
 set_target_heartbeat(char *ip_src, char *ip_dst, u_int16_t port_dst, char *p_name)
 {
-  static unsigned long srcLen=0,dstLen=0,p_nameLen=0;
-  static int port[1]={0};
-  static char src[15]={0},dst[15]={0},proto[6]={0};
   static unsigned long failed=0;  /* failed stores in a row, only the first is logged */
   char key[128];
 
