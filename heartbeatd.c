@@ -302,13 +302,11 @@ main(int argc, char **argv)
   signal(SIGTERM, sighandler_close);
 
   logmsg(LOG_DEBUG, "Listening on %s", pflogif);
-  //
-  //
+
   // CONNECT TO MEMCACHED
   memc = memcached_create(NULL);
   servers = memcached_server_list_append(servers, sock, 0, &rc);
   rc = memcached_server_push(memc, servers);
-//rc = memcached_server_add_unix_socket(memc, sock);
 
   if (rc == MEMCACHED_SUCCESS)
   {
@@ -322,8 +320,6 @@ main(int argc, char **argv)
   // and set options and settings
   memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_CONNECT_TIMEOUT, MEMCTMO);
   memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_POLL_TIMEOUT, MEMCTMO);
-  //
-  //
 
   if (init_pcap() == -1)
     errx(1, "couldn't initialize pcap");
@@ -341,6 +337,8 @@ main(int argc, char **argv)
   rc = memcached_version(memc);
   if (rc != MEMCACHED_SUCCESS)
     errx(1, "couldn't connect to memcached: %s", memcached_last_error_message(memc));
+
+  memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_NOREPLY, 1);
 
   if (!flag_debug) {
     if (daemon(0, 0) == -1)
