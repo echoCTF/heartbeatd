@@ -148,7 +148,6 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   u_int32_t          caplen = h->caplen;
   const struct ip    *ip = NULL;
   const struct pfloghdr  *hdr;
-  struct protoent *pp = NULL;
   char *pname = "unknown";
   char straddr_src[40] = { '\0' }, straddr_dst[40] = { '\0' };
   u_int16_t dport=0;
@@ -183,19 +182,17 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
     inet_ntop(af, &ip->ip_dst, straddr_dst,sizeof(straddr_dst));
     if (ip->ip_p == IPPROTO_UDP) {
         dport = hdr_dport;
-        pp=getprotobynumber(IPPROTO_UDP);
+        pname = "udp";
     } else if (ip->ip_p == IPPROTO_ICMP) {
         dport = 0;
-        pp=getprotobynumber(IPPROTO_ICMP);
+        pname = "icmp";
     } else if (ip->ip_p == IPPROTO_TCP) {
         dport = hdr_dport;
-        pp=getprotobynumber(IPPROTO_TCP);
+        pname = "tcp";
     }
   }
 
   if (straddr_dst[0] != '\0' && straddr_src[0] != '\0') {
-    if (pp != NULL)
-      pname = pp->p_name;
     if (flag_debug) {
       time_t _tm = time(NULL);
       char *timestring = asctime(localtime(&_tm));
