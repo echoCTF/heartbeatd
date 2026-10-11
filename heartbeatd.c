@@ -55,8 +55,8 @@
 #define PCAPTIMO    500  /* ms */
 #define PCAPOPTZ    1  /* optimize filter */
 #define PCAPFSIZ    512  /* pcap filter string size */
-#define MAXWAITTMO  (60*60*24*30)  /* memcached reads larger expiry values as absolute time */
-#define MEMCTMO     250  /* ms, memcached connect and poll timeout */
+#define MAXWAITTMO  (60*60*24*30)
+#define MEMCTMO     250
 
 
 
@@ -153,10 +153,7 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   char straddr_src[40] = { '\0' }, straddr_dst[40] = { '\0' };
   u_int16_t dport=0;
   u_int16_t hdr_dport=0;
-  time_t _tm =time(NULL );
-  struct tm * curtime = localtime ( &_tm );
-  char *timestring=asctime(curtime);
-  timestring[strlen(timestring) - 1] = 0;
+  char tsbuf[64] = { '\0' };
   hdr = (const struct pfloghdr *)sp;
   if (hdr->length < MIN_PFLOG_HDRLEN) {
     logmsg(LOG_WARNING, "invalid pflog header length (%u/%u). "
@@ -171,7 +168,6 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
     return;
   }
 
-  /* dport is the last field of the header, only read it when the header has it */
   if (hdr->length >= sizeof(struct pfloghdr))
     hdr_dport = ntohs(hdr->dport);
 
@@ -200,7 +196,13 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   if (straddr_dst[0] != '\0' && straddr_src[0] != '\0') {
     if (pp != NULL)
       pname = pp->p_name;
-    logmsg(LOG_DEBUG,"[%s] SRC: %s => DST: => %s:%d, PROTO: %s",timestring,straddr_src,straddr_dst, dport, pname);
+    if (flag_debug) {
+      time_t _tm = time(NULL);
+      char *timestring = asctime(localtime(&_tm));
+      timestring[strlen(timestring) - 1] = 0;
+      snprintf(tsbuf, sizeof(tsbuf), "[%s] ", timestring);
+    }
+    logmsg(LOG_DEBUG,"%sSRC: %s => DST: => %s:%d, PROTO: %s",tsbuf,straddr_src,straddr_dst, dport, pname);
     set_target_heartbeat(straddr_src,straddr_dst, dport, pname);
   }
 }
@@ -208,7 +210,7 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 int
 set_target_heartbeat(char *ip_src, char *ip_dst, u_int16_t port_dst, char *p_name)
 {
-  static unsigned long failed=0;  /* failed stores in a row, only the first is logged */
+  static unsigned long failed=0;
   char key[128];
 
   sprintf(key,"target_heartbeat:%s",ip_dst);
@@ -301,7 +303,7 @@ main(int argc, char **argv)
     errx(1, "Couldn't add server: %s\n", memcached_strerror(memc, rc));
   }
 
-  // and set options and settings, a stuck memcached must not hold up the packet loop
+  // and set options and settings
   memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_CONNECT_TIMEOUT, MEMCTMO);
   memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_POLL_TIMEOUT, MEMCTMO);
   //
@@ -320,7 +322,6 @@ main(int argc, char **argv)
     err(1, "failed to drop privs");
   }
 
-  /* connect now, as the unprivileged user, so a missing or dead socket stops the start */
   rc = memcached_version(memc);
   if (rc != MEMCACHED_SUCCESS)
     errx(1, "couldn't connect to memcached: %s", memcached_last_error_message(memc));
@@ -334,7 +335,7 @@ main(int argc, char **argv)
   }
 
   r = pcap_loop(hpcap, -1, phandler, NULL);
-  if (r == -1)  /* capture error, a signal stop returns -2 */
+  if (r == -1)
     logmsg(LOG_ERR, "pcap_loop: %s", pcap_geterr(hpcap));
 
   logmsg(LOG_NOTICE, "exiting");
