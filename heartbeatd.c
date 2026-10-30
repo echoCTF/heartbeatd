@@ -238,6 +238,8 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
   if (set_target_heartbeat(straddr_dst) == 0) {
     slot->addr = ip->ip_dst.s_addr;
     slot->last = h->ts.tv_sec;
+  } else {
+     memset(hbcache, 0, sizeof(hbcache));
   }
 }
 
