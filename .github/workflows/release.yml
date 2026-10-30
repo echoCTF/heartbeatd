@@ -1,0 +1,97 @@
+name: release
+
+# Push a tag like v1.2.3 to build and publish a GitHub release.
+# "Run workflow" (workflow_dispatch) builds the same binaries as
+# downloadable workflow artifacts without publishing anything.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: OpenBSD ${{ matrix.release }} ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # OpenBSD binaries are only guaranteed to run on the release they
+        # were built on, so build one per supported release.
+        release: ['7.8', '7.9', '8.0']
+        arch: ['x86_64']
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build in an OpenBSD VM
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          sync: rsync
+          copyback: true
+          prepare: |
+            pkg_add -I libmemcached
+          run: |
+            set -e
+            uname -a
+            make
+            ldd ./heartbeatd
+
+            # smoke test: an unknown flag must print usage and exit 1
+            set +e
+            ./heartbeatd -Z 2>usage.txt
+            status=$?
+            set -e
+            cat usage.txt
+            test "$status" -eq 1
+            grep -q '^usage: heartbeatd ' usage.txt
+
+            ver="${GITHUB_REF_NAME:-dev}"
+            case "$GITHUB_REF_TYPE" in tag) ;; *) ver="dev-$(echo "$GITHUB_SHA" | cut -c1-7)" ;; esac
+            name="heartbeatd-${ver}-openbsd-$(uname -r)-$(uname -m)"
+            rm -rf dist && mkdir -p "dist/${name}"
+            install -c -s -m 555 heartbeatd "dist/${name}/heartbeatd"
+            install -c -m 555 heartbeatd.rc "dist/${name}/heartbeatd.rc"
+            install -c -m 444 README.md "dist/${name}/README.md"
+            tar -C dist -czf "dist/${name}.tgz" "${name}"
+            rm -rf "dist/${name}"
+            ls -l dist
+
+      - name: Upload build
+        uses: actions/upload-artifact@v7
+        with:
+          name: openbsd-${{ matrix.release }}-${{ matrix.arch }}
+          path: dist/*.tgz
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum *.tgz > SHA256
+          cat SHA256
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          gh release upload "$TAG" dist/*.tgz dist/SHA256 --clobber
