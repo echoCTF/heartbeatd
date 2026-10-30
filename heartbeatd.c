@@ -286,6 +286,7 @@ main(int argc, char **argv)
   char *sock = "/var/run/memcached/memcached.sock";
   pcap_handler   phandler = logpkt_handler;
   memcached_server_st *servers = NULL;
+  struct pcap_stat pstat;
 
   while ((ch = getopt(argc, argv, "Dl:s:t:u:f:v")) != -1) {
     switch (ch) {
@@ -392,6 +393,10 @@ main(int argc, char **argv)
   r = pcap_loop(hpcap, -1, phandler, NULL);
   if (r == -1)
     logmsg(LOG_ERR, "pcap_loop: %s", pcap_geterr(hpcap));
+
+  if (pcap_stats(hpcap, &pstat) == 0)
+    logmsg(LOG_NOTICE, "%u packets received, %u dropped by kernel",
+        pstat.ps_recv, pstat.ps_drop);
 
   logmsg(LOG_NOTICE, "exiting");
   if (!flag_debug)
