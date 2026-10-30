@@ -21,6 +21,8 @@ The key expires after an hour by default. If the key exists, somebody reached th
 * a running memcached
 * root to start it (it drops to an unprivileged user right after opening the interface)
 
+Per-packet lines from `-v` go to syslog at `daemon.debug`, which the default `/etc/syslog.conf` discards. Add a `daemon.debug` (or `!heartbeatd` program block) line there if you want to keep them.
+
 ## Build and install
 
 ```
@@ -37,7 +39,7 @@ heartbeatd [-Dv] [-l pflog_interface] [-u user] [-s socket] [-t wait_timeout] [-
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `-s` | memcached server, a unix socket path. Always set this. | none |
+| `-s` | memcached unix socket, absolute path | `/var/run/memcached/memcached.sock` |
 | `-l` | pflog interface to read | `pflog0` |
 | `-u` | user to drop privileges to | `_memcached` |
 | `-t` | seconds a key lives in memcached | `3600` |
