@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/un.h>
 #include <sys/signal.h>
 
 #include <net/if.h>
@@ -66,7 +67,6 @@ struct hbslot {
   time_t     last;
 };
 
-int debug = 1;
 int wait_timeout=60*60;
 int hbival=0;
 struct hbslot  hbcache[HBCACHESZ];
@@ -246,13 +246,16 @@ set_target_heartbeat(const char *ip_dst)
 {
   static unsigned long failed=0;
   char key[128];
+  int keylen;
 
-  sprintf(key,"target_heartbeat:%s",ip_dst);
-  rc = memcached_set(memc, key, strlen(key), ip_dst, strlen(ip_dst), (time_t)wait_timeout, (uint32_t)0);
+  keylen = snprintf(key, sizeof(key), "target_heartbeat:%s", ip_dst);
+  if (keylen < 0 || (size_t)keylen >= sizeof(key))
+    return (-1);
+  rc = memcached_set(memc, key, keylen, ip_dst, strlen(ip_dst), (time_t)wait_timeout, (uint32_t)0);
   if (rc != MEMCACHED_SUCCESS)
   {
     if (failed++ == 0)
-      logmsg(LOG_ERR, "Couldn't store key: %s\n", memcached_strerror(memc, rc));
+      logmsg(LOG_ERR, "Couldn't store key: %s", memcached_strerror(memc, rc));
     return (-1);
   }
 
@@ -316,6 +319,15 @@ main(int argc, char **argv)
   if (geteuid())
     errx(1, "need root privileges");
 
+  /*
+   * libmemcached reconnects by path after daemon(3) has chdir'ed to /,
+   * and silently truncates paths longer than sun_path.
+   */
+  if (sock[0] != '/')
+    errx(1, "memcached socket must be an absolute path: %s", sock);
+  if (strlen(sock) >= sizeof(((struct sockaddr_un *)0)->sun_path))
+    errx(1, "memcached socket path too long: %s", sock);
+
   hbival = wait_timeout / 10;
   if (hbival > HBMAXIVAL)
     hbival = HBMAXIVAL;
@@ -329,9 +341,13 @@ main(int argc, char **argv)
   logmsg(LOG_DEBUG, "Listening on %s", pflogif);
 
   // CONNECT TO MEMCACHED
-  memc = memcached_create(NULL);
+  if ((memc = memcached_create(NULL)) == NULL)
+    errx(1, "memcached_create failed");
   servers = memcached_server_list_append(servers, sock, 0, &rc);
+  if (servers == NULL)
+    errx(1, "Couldn't add server: %s", memcached_strerror(memc, rc));
   rc = memcached_server_push(memc, servers);
+  memcached_server_list_free(servers);
 
   if (rc == MEMCACHED_SUCCESS)
   {
@@ -339,7 +355,7 @@ main(int argc, char **argv)
   }
   else
   {
-    errx(1, "Couldn't add server: %s\n", memcached_strerror(memc, rc));
+    errx(1, "Couldn't add server: %s", memcached_strerror(memc, rc));
   }
 
   // and set options and settings
