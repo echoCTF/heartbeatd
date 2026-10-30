@@ -384,11 +384,12 @@ main(int argc, char **argv)
 
   memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_NOREPLY, 1);
 
+  tzset();
+
   if (!flag_debug) {
     if (daemon(0, 0) == -1)
       err(1, "daemon");
 
-    tzset();
     openlog_r(__progname, LOG_PID | LOG_NDELAY, LOG_DAEMON, &sdata);
   }
 
