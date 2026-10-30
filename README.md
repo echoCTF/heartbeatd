@@ -32,7 +32,7 @@ install -c -o root -g wheel -m 555 heartbeatd.rc /etc/rc.d/heartbeatd
 ## Usage
 
 ```
-heartbeatd [-D] [-l pflog_interface] [-u user] [-s socket] [-t wait_timeout] [-f pcap filter]
+heartbeatd [-Dv] [-l pflog_interface] [-u user] [-s socket] [-t wait_timeout] [-f pcap filter]
 ```
 
 | Flag | What it does | Default |
@@ -42,7 +42,8 @@ heartbeatd [-D] [-l pflog_interface] [-u user] [-s socket] [-t wait_timeout] [-f
 | `-u` | user to drop privileges to | `_memcached` |
 | `-t` | seconds a key lives in memcached | `3600` |
 | `-f` | pcap filter | TCP SYN, UDP and ICMP over IPv4 |
-| `-D` | stay in the foreground and log to stderr | off |
+| `-D` | stay in the foreground and log to stderr, including every packet | off |
+| `-v` | log every packet seen (to syslog at `daemon.debug`, or stderr with `-D`) | off |
 
 ## Example
 

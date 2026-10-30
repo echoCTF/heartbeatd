@@ -46,6 +46,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <syslog.h>
+#include <time.h>
 #include <string.h>
 #include <unistd.h>
 #include <pcap.h>
@@ -71,6 +72,7 @@ int hbival=0;
 struct hbslot  hbcache[HBCACHESZ];
 
 u_int8_t  flag_debug = 0;
+u_int8_t  flag_verbose = 0;
 char      *HEARTBEATD_USER = "_memcached";
 char      *pflogif = "pflog0";
 char      errbuf[PCAP_ERRBUF_SIZE];
@@ -87,7 +89,8 @@ void  logmsg(int , const char *, ...);
 void  sighandler_close(int);
 int   init_pcap(void);
 void  logpkt_handler(u_char *, const struct pcap_pkthdr *, const u_char *);
-int   set_target_heartbeat(char *, char *, u_int16_t, char *);
+void  log_packet(const struct pfloghdr *, const struct ip *);
+int   set_target_heartbeat(const char *);
 __dead void  usage(void);
 
 void
@@ -148,19 +151,53 @@ init_pcap(void)
 }
 
 void
+log_packet(const struct pfloghdr *hdr, const struct ip *ip)
+{
+  char straddr_src[INET_ADDRSTRLEN], straddr_dst[INET_ADDRSTRLEN];
+  char tsbuf[64] = { '\0' };
+  const char *pname = "unknown";
+  u_int16_t dport = 0;
+  struct tm *tm;
+  time_t now;
+
+  if (inet_ntop(AF_INET, &ip->ip_src, straddr_src, sizeof(straddr_src)) == NULL ||
+      inet_ntop(AF_INET, &ip->ip_dst, straddr_dst, sizeof(straddr_dst)) == NULL)
+    return;
+
+  switch (ip->ip_p) {
+    case IPPROTO_TCP:
+      pname = "tcp";
+      break;
+    case IPPROTO_UDP:
+      pname = "udp";
+      break;
+    case IPPROTO_ICMP:
+      pname = "icmp";
+      break;
+  }
+  if ((ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) &&
+      hdr->length >= sizeof(struct pfloghdr))
+    dport = ntohs(hdr->dport);
+
+  if (flag_debug) {
+    now = time(NULL);
+    if ((tm = localtime(&now)) != NULL)
+      strftime(tsbuf, sizeof(tsbuf), "[%a %b %e %H:%M:%S %Y] ", tm);
+  }
+  logmsg(LOG_DEBUG, "%sSRC: %s => DST: %s:%d, PROTO: %s",
+      tsbuf, straddr_src, straddr_dst, dport, pname);
+}
+
+void
 logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 {
-  sa_family_t        af;
   u_int32_t          hdrlen;
   u_int32_t          caplen = h->caplen;
-  const struct ip    *ip = NULL;
+  const struct ip    *ip;
   const struct pfloghdr  *hdr;
   struct hbslot *slot;
-  char *pname = "unknown";
-  char straddr_src[40] = { '\0' }, straddr_dst[40] = { '\0' };
-  u_int16_t dport=0;
-  u_int16_t hdr_dport=0;
-  char tsbuf[64] = { '\0' };
+  char straddr_dst[INET_ADDRSTRLEN];
+
   hdr = (const struct pfloghdr *)sp;
   if (hdr->length < MIN_PFLOG_HDRLEN) {
     logmsg(LOG_WARNING, "invalid pflog header length (%u/%u). "
@@ -175,52 +212,37 @@ logpkt_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
     return;
   }
 
-  if (hdr->length >= sizeof(struct pfloghdr))
-    hdr_dport = ntohs(hdr->dport);
+  /* only IPv4 destinations are tracked */
+  if (hdr->af != AF_INET)
+    return;
 
-  af = hdr->af;
-  if (af == AF_INET) {
-    if (caplen < hdrlen + sizeof(struct ip)) {
-      logmsg(LOG_WARNING, "packet shorter than the pflog and IP headers (%u). "
-        "packet dropped.", caplen);
-      return;
-    }
-    ip = (const struct ip *)(sp + hdrlen);
-    inet_ntop(af, &ip->ip_src, straddr_src,sizeof(straddr_src));
-    inet_ntop(af, &ip->ip_dst, straddr_dst,sizeof(straddr_dst));
-    if (ip->ip_p == IPPROTO_UDP) {
-        dport = hdr_dport;
-        pname = "udp";
-    } else if (ip->ip_p == IPPROTO_ICMP) {
-        dport = 0;
-        pname = "icmp";
-    } else if (ip->ip_p == IPPROTO_TCP) {
-        dport = hdr_dport;
-        pname = "tcp";
-    }
+  if (caplen < hdrlen + sizeof(struct ip)) {
+    logmsg(LOG_WARNING, "packet shorter than the pflog and IP headers (%u). "
+      "packet dropped.", caplen);
+    return;
   }
+  ip = (const struct ip *)(sp + hdrlen);
 
-  if (straddr_dst[0] != '\0' && straddr_src[0] != '\0') {
-    if (flag_debug) {
-      time_t _tm = time(NULL);
-      char *timestring = asctime(localtime(&_tm));
-      timestring[strlen(timestring) - 1] = 0;
-      snprintf(tsbuf, sizeof(tsbuf), "[%s] ", timestring);
-    }
-    logmsg(LOG_DEBUG,"%sSRC: %s => DST: => %s:%d, PROTO: %s",tsbuf,straddr_src,straddr_dst, dport, pname);
-    slot = &hbcache[ntohl(ip->ip_dst.s_addr) & (HBCACHESZ - 1)];
-    if (slot->addr == ip->ip_dst.s_addr && h->ts.tv_sec >= slot->last &&
-        h->ts.tv_sec - slot->last < hbival)
-      return;
-    if (set_target_heartbeat(straddr_src,straddr_dst, dport, pname) == 0) {
-      slot->addr = ip->ip_dst.s_addr;
-      slot->last = h->ts.tv_sec;
-    }
+  if (flag_debug || flag_verbose)
+    log_packet(hdr, ip);
+
+  /* skip the memcached round trip if this target was refreshed recently */
+  slot = &hbcache[ntohl(ip->ip_dst.s_addr) & (HBCACHESZ - 1)];
+  if (slot->addr == ip->ip_dst.s_addr && h->ts.tv_sec >= slot->last &&
+      h->ts.tv_sec - slot->last < hbival)
+    return;
+
+  if (inet_ntop(AF_INET, &ip->ip_dst, straddr_dst, sizeof(straddr_dst)) == NULL)
+    return;
+
+  if (set_target_heartbeat(straddr_dst) == 0) {
+    slot->addr = ip->ip_dst.s_addr;
+    slot->last = h->ts.tv_sec;
   }
 }
 
 int
-set_target_heartbeat(char *ip_src, char *ip_dst, u_int16_t port_dst, char *p_name)
+set_target_heartbeat(const char *ip_dst)
 {
   static unsigned long failed=0;
   char key[128];
@@ -247,7 +269,7 @@ void
 usage(void)
 {
   fprintf(stderr,
-      "usage: %s [-D] [-l pflog_interface] [-u user] [-s socket] [-t wait_timeout] [-f pcap filter]\n",
+      "usage: %s [-Dv] [-l pflog_interface] [-u user] [-s socket] [-t wait_timeout] [-f pcap filter]\n",
       __progname);
   exit(1);
 }
@@ -262,7 +284,7 @@ main(int argc, char **argv)
   pcap_handler   phandler = logpkt_handler;
   memcached_server_st *servers = NULL;
 
-  while ((ch = getopt(argc, argv, "Dl:s:t:u:f:")) != -1) {
+  while ((ch = getopt(argc, argv, "Dl:s:t:u:f:v")) != -1) {
     switch (ch) {
       case 'D':
         flag_debug = 1;
@@ -278,6 +300,9 @@ main(int argc, char **argv)
         break;
       case 'f':
         filter = optarg;
+        break;
+      case 'v':
+        flag_verbose = 1;
         break;
       case 't':
         wait_timeout = strtonum(optarg, 1, MAXWAITTMO, &errstr);
