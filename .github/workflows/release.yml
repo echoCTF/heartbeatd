@@ -168,7 +168,7 @@ jobs:
             -f $work/plist \
             -B $fake \
             -p /usr/local \
-            heartbeatd-$v
+            $work/heartbeatd-$v.tgz
           ls -l $work/heartbeatd-$v.tgz
 
           # Prove pkg_add accepts it (name consistency, deps, rc script), then remove it.
