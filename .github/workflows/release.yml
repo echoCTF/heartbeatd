@@ -1,97 +1,192 @@
-name: release
+name: package
 
-# Push a tag like v1.2.3 to build and publish a GitHub release.
-# "Run workflow" (workflow_dispatch) builds the same binaries as
-# downloadable workflow artifacts without publishing anything.
+# Builds an OpenBSD package (pkg_add-able .tgz) of heartbeatd for each
+# OpenBSD release and publishes one GitHub release per release+version.
+#
+# Naming follows the obsd-binaries conventions:
+#   tag:   heartbeatd-<version>[p<revision>]-openbsd-<release>
+#   asset: heartbeatd-<version>[p<revision>].tgz
+# The asset name must equal the package name inside it, or pkg_add fails
+# with "Package name is not consistent". If a tag ever gets burned (for
+# example by an immutable release), bump the revision to get a fresh one.
+
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      openbsd:
+        description: "OpenBSD release to build for"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - "7.9"
+          - "8.0"
+      version:
+        description: "Package version, e.g. 0.0.1 or v0.0.1. Empty: the tag you run from, else the latest v* tag."
+        required: false
+        default: ""
+        type: string
+      revision:
+        description: "Package REVISION, e.g. 0 or p0. Empty: no pN suffix."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: OpenBSD ${{ matrix.release }} ${{ matrix.arch }}
-    runs-on: ubuntu-latest
+  heartbeatd-pkg:
+    name: heartbeatd (OpenBSD ${{ matrix.openbsd }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        # OpenBSD binaries are only guaranteed to run on the release they
-        # were built on, so build one per supported release.
-        release: ['7.8', '7.9', '8.0']
-        arch: ['x86_64']
+        openbsd: ${{ fromJSON(inputs.openbsd == 'all' && '["7.9", "8.0"]' || format('["{0}"]', inputs.openbsd)) }}
+    defaults:
+      run:
+        shell: cpa.sh {0}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Build in an OpenBSD VM
-        uses: vmactions/openbsd-vm@v1
         with:
-          release: ${{ matrix.release }}
-          arch: ${{ matrix.arch }}
-          sync: rsync
-          copyback: true
-          prepare: |
-            pkg_add -I libmemcached
-          run: |
-            set -e
-            uname -a
-            make
-            ldd ./heartbeatd
+          fetch-depth: 0
+          persist-credentials: false
 
-            # smoke test: an unknown flag must print usage and exit 1
-            set +e
-            ./heartbeatd -Z 2>usage.txt
-            status=$?
-            set -e
-            cat usage.txt
-            test "$status" -eq 1
-            grep -q '^usage: heartbeatd ' usage.txt
-
-            ver="${GITHUB_REF_NAME:-dev}"
-            case "$GITHUB_REF_TYPE" in tag) ;; *) ver="dev-$(echo "$GITHUB_SHA" | cut -c1-7)" ;; esac
-            name="heartbeatd-${ver}-openbsd-$(uname -r)-$(uname -m)"
-            rm -rf dist && mkdir -p "dist/${name}"
-            install -c -s -m 555 heartbeatd "dist/${name}/heartbeatd"
-            install -c -m 555 heartbeatd.rc "dist/${name}/heartbeatd.rc"
-            install -c -m 444 README.md "dist/${name}/README.md"
-            tar -C dist -czf "dist/${name}.tgz" "${name}"
-            rm -rf "dist/${name}"
-            ls -l dist
-
-      - name: Upload build
-        uses: actions/upload-artifact@v7
-        with:
-          name: openbsd-${{ matrix.release }}-${{ matrix.arch }}
-          path: dist/*.tgz
-          if-no-files-found: error
-
-  release:
-    if: github.ref_type == 'tag'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Checksums
-        working-directory: dist
-        run: |
-          sha256sum *.tgz > SHA256
-          cat SHA256
-
-      - name: Publish GitHub release
+      - name: Work out version and check for an existing release
+        id: check
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_REVISION: ${{ inputs.revision }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
-          gh release upload "$TAG" dist/*.tgz dist/SHA256 --clobber
+          v=$INPUT_VERSION
+          if [ -z "$v" ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            v=$GITHUB_REF_NAME
+          fi
+          if [ -z "$v" ]; then
+            v=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          fi
+          v=${v#v}
+          if ! [[ "$v" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "need a version like 0.0.1 (input or a v* tag), got: '$v'" >&2
+            exit 1
+          fi
+
+          r=${INPUT_REVISION#p}
+          if [ -n "$r" ]; then
+            if ! [[ "$r" =~ ^[0-9]+$ ]]; then
+              echo "revision must be a number like 0 or p0, got: $INPUT_REVISION" >&2
+              exit 1
+            fi
+            v="${v}p${r}"
+          fi
+
+          tag=heartbeatd-$v-openbsd-${{ matrix.openbsd }}
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=heartbeatd-$v.tgz" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release $tag exists, skipping"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: cross-platform-actions/action@v1.7.0
+        if: steps.check.outputs.exists != 'true'
+        with:
+          operating_system: openbsd
+          architecture: x86-64
+          version: ${{ matrix.openbsd }}
+
+      - name: Build and smoke test
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          set -e
+          uname -a
+          sudo pkg_add libmemcached
+          make
+          ldd ./heartbeatd
+          set +e
+          ./heartbeatd -Z > /tmp/smoke.out 2>&1
+          rc=$?
+          set -e
+          cat /tmp/smoke.out
+          [ "$rc" -eq 1 ] || { echo "expected exit 1 from -Z, got $rc" >&2; exit 1; }
+          grep -q '^usage: heartbeatd ' /tmp/smoke.out || { echo "no usage line" >&2; exit 1; }
+
+      - name: Create package
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          set -e
+          ws=$PWD
+          v="${{ steps.check.outputs.version }}"
+          asset="${{ steps.check.outputs.asset }}"
+          work=/tmp/pkgwork
+          fake=$work/fake
+          sudo rm -rf $work
+          mkdir -p $work
+
+          # Same files as the manual install: binary, rc script, plus the README.
+          sudo install -d -o root -g wheel $fake/usr/local/sbin $fake/etc/rc.d \
+            $fake/usr/local/share/doc/heartbeatd
+          sudo install -c -s -o root -g bin -m 555 heartbeatd $fake/usr/local/sbin/heartbeatd
+          sudo install -c -o root -g wheel -m 555 heartbeatd.rc $fake/etc/rc.d/heartbeatd
+          sudo install -c -o root -g bin -m 444 README.md $fake/usr/local/share/doc/heartbeatd/README.md
+
+          # Depend on the libmemcached package we built against, so pkg_add pulls it in.
+          dep=$(pkg_info | awk '$1 ~ /^libmemcached-[0-9]/ {print $1; exit}')
+          [ -n "$dep" ] || { echo "libmemcached not installed?" >&2; exit 1; }
+
+          cat > $work/plist <<EOF
+          @depend devel/libmemcached:libmemcached-*:$dep
+          @bin sbin/heartbeatd
+          share/doc/heartbeatd/
+          share/doc/heartbeatd/README.md
+          @rcscript /etc/rc.d/heartbeatd
+          EOF
+          sed -i 's/^[[:space:]]*//' $work/plist
+
+          cat > $work/desc <<EOF
+          heartbeatd reads a pflog interface and records in memcached which
+          IPv4 destination addresses have been contacted, so echoCTF can tell
+          whether a target is still in use.
+
+          Built from https://github.com/$GITHUB_REPOSITORY at $GITHUB_SHA.
+          EOF
+          sed -i 's/^[[:space:]]*//' $work/desc
+
+          cat $work/plist
+          cd $work
+          sudo pkg_create \
+            -A "$(arch -s)" \
+            -D COMMENT="pflog to memcached heartbeat daemon for echoCTF" \
+            -D FULLPKGPATH=net/heartbeatd \
+            -d $work/desc \
+            -f $work/plist \
+            -B $fake \
+            -p /usr/local \
+            heartbeatd-$v
+          ls -l $work/heartbeatd-$v.tgz
+
+          # Prove pkg_add accepts it (name consistency, deps, rc script), then remove it.
+          sudo pkg_add -D unsigned $work/heartbeatd-$v.tgz
+          pkg_info -L heartbeatd
+          sudo pkg_delete heartbeatd
+
+          cp $work/heartbeatd-$v.tgz $ws/$asset
+          ls -l $ws/$asset
+
+      - name: Release
+        if: steps.check.outputs.exists != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum ${{ steps.check.outputs.asset }}
+          gh release create "${{ steps.check.outputs.tag }}" ${{ steps.check.outputs.asset }} \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "heartbeatd ${{ steps.check.outputs.version }} package (OpenBSD ${{ matrix.openbsd }})" \
+            --notes "Built from $GITHUB_SHA. Install with: pkg_add -D unsigned ./${{ steps.check.outputs.asset }} && rcctl enable heartbeatd"
